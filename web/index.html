@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mesa Island</title>
+<style>
+  :root {
+    --ink: #1c1915;
+    --paper: #f3ecdf;
+    --sea: #1d4e68;
+    --line: #e4d8c4;
+    --gold: #c9842a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--sea); color: var(--ink); font: 15px/1.45 "Iowan Old Style", Palatino, Georgia, serif; }
+  body { display: grid; grid-template-columns: 1fr 320px; }
+  canvas { width: 100%; height: 100%; display: block; background: #1d4e68; cursor: crosshair; }
+  aside { background: var(--paper); border-left: 1px solid #c8bba6; display: flex; flex-direction: column; min-height: 100vh; }
+  header { padding: 22px 22px 8px; }
+  h1 { font-size: 28px; font-weight: 500; margin: 0; letter-spacing: -0.03em; }
+  h1 span { color: var(--gold); }
+  .sub { margin: 4px 0 0; color: #6d6458; font-size: 13px; }
+  dl { display: grid; grid-template-columns: 88px 1fr; gap: 4px 8px; margin: 12px 22px; font-variant-numeric: tabular-nums; font-size: 13px; }
+  dt { color: #6d6458; }
+  dd { margin: 0; }
+  .chat { flex: 1; overflow: auto; margin: 0 22px 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .chat p { margin: 0 0 10px; }
+  .chat strong { font-weight: 600; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 22px 22px; }
+  button { font: inherit; background: white; border: 1px solid #c8bba6; border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+  button.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  @media (max-width: 800px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+    aside { min-height: 0; }
+    canvas { height: 62vh; }
+  }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<aside>
+  <header>
+    <h1>Mesa <span>Island</span></h1>
+    <p class="sub">A body, a memory, and nothing it is supposed to do.</p>
+  </header>
+  <dl>
+    <dt>who</dt><dd id="who">—</dd>
+    <dt>where</dt><dd id="where">—</dd>
+    <dt>holding</dt><dd id="holding">—</dd>
+    <dt>last act</dt><dd id="act">—</dd>
+    <dt>tick</dt><dd id="tick">—</dd>
+  </dl>
+  <div class="chat" id="chat"></div>
+  <div class="controls">
+    <button id="drive" type="button">Drive</button>
+    <button id="jump" type="button">Jump</button>
+    <button id="stop" type="button">Stop</button>
+    <button id="follow" type="button" class="on">Follow</button>
+  </div>
+</aside>
+<script>
+const canvas = document.getElementById("view");
+const ctx = canvas.getContext("2d");
+const COS = Math.cos(Math.PI / 6);
+const SIN = 0.5;
+let state = null;
+let session = null;
+let drive = false;
+let follow = true;
+const cam = { x: 0, z: 0 };
+
+function resize() {
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.max(1, Math.floor(rect.width * devicePixelRatio));
+  canvas.height = Math.max(1, Math.floor(rect.height * devicePixelRatio));
+}
+addEventListener("resize", resize);
+resize();
+
+function scale() { return Math.min(canvas.width, canvas.height) / 78; }
+
+function project(x, y, z) {
+  const dx = x - cam.x;
+  const dz = z - cam.z;
+  const s = scale();
+  return [
+    canvas.width / 2 + (dx - dz) * COS * s,
+    canvas.height * 0.58 + (dx + dz) * SIN * s - y * s,
+  ];
+}
+
+function shade(color, k) {
+  const c = color.map((v) => Math.max(0, Math.min(255, Math.round(v * 255 * k))));
+  return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+}
+
+function face(points, fill) {
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
+
+function drawBox(x, y, z, w, h, d, color) {
+  const hx = w / 2, hy = h / 2, hz = d / 2;
+  const top = y + hy, bot = y - hy;
+  const corners = {
+    ntl: project(x - hx, top, z - hz), ntr: project(x + hx, top, z - hz),
+    nbl: project(x - hx, bot, z - hz), nbr: project(x + hx, bot, z - hz),
+    ftl: project(x - hx, top, z + hz), ftr: project(x + hx, top, z + hz),
+    fbl: project(x - hx, bot, z + hz), fbr: project(x + hx, bot, z + hz),
+  };
+  // Right, left, top. Painter's order is handled by the caller.
+  face([corners.ntr, corners.ftr, corners.fbr, corners.nbr], shade(color, 0.72));
+  face([corners.ntl, corners.ftl, corners.fbl, corners.nbl], shade(color, 0.55));
+  face([corners.ntl, corners.ntr, corners.ftr, corners.ftl], shade(color, 1));
+}
+
+function drawRing(x, y, z, color) {
+  const [sx, sy] = project(x, y, z);
+  const s = scale();
+  ctx.beginPath();
+  ctx.ellipse(sx, sy, 1.7 * s, 0.72 * s, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = shade(color, 0.9);
+  ctx.lineWidth = Math.max(3, 0.28 * s);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(sx, sy, 0.85 * s, 0.36 * s, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = shade(color, 0.55);
+  ctx.lineWidth = Math.max(1, 0.08 * s);
+  ctx.stroke();
+}
+
+function drawPlayer(p) {
+  const [x, y, z] = p.position;
+  drawBox(x, y, z, 0.8, 1.5, 0.8, [0.93, 0.45, 0.32]);
+  drawBox(x, y + 1.15, z, 0.46, 0.46, 0.46, [0.98, 0.86, 0.72]);
+}
+
+function label(x, y, z, text) {
+  const [sx, sy] = project(x, y, z);
+  ctx.font = `${Math.max(11, scale() * 0.16)}px Palatino, Georgia, serif`;
+  ctx.fillStyle = "rgba(255,248,236,0.92)";
+  ctx.textAlign = "center";
+  ctx.fillText(text, sx, sy - 8);
+}
+
+function frame() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const sky = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  sky.addColorStop(0, "#8ec5d8");
+  sky.addColorStop(0.45, "#d7efe4");
+  sky.addColorStop(1, "#1d4e68");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (!state) { requestAnimationFrame(frame); return; }
+  if (follow && state.player) {
+    cam.x += (state.player.position[0] - cam.x) * 0.08;
+    cam.z += (state.player.position[2] - cam.z) * 0.08;
+  }
+
+  const bodies = (state.bodies || []).filter((b) => b.role !== "Ocean" && b.role !== "Boundary");
+  bodies.sort((a, b) => (a.position[0] + a.position[2]) - (b.position[0] + b.position[2]));
+  for (const body of bodies) {
+    const [x, y, z] = body.position;
+    const [w, h, d] = body.size;
+    if (body.shape === "ring") drawRing(x, y, z, body.color);
+    else drawBox(x, y, z, w, h, d, body.color);
+    if (["Peak", "Spire", "Summit", "Ridge", "TallMesa"].includes(body.name)) {
+      label(x, y + h / 2, z, body.name);
+    }
+  }
+  if (state.player) drawPlayer(state.player);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+async function tick() {
+  try {
+    const res = await fetch("/spectate");
+    state = await res.json();
+    const p = state.player;
+    document.getElementById("who").textContent = p.name;
+    document.getElementById("where").textContent = p.position.map((n) => n.toFixed(1)).join(", ");
+    document.getElementById("holding").textContent = p.holding || "empty hands";
+    document.getElementById("act").textContent = p.last_action_result;
+    document.getElementById("tick").textContent = String(state.tick);
+    const chat = document.getElementById("chat");
+    chat.innerHTML = (state.chat || []).map((m) => `<p><strong>${m.name}.</strong> ${escapeHtml(m.content)}</p>`).join("") || "<p>The island is quiet.</p>";
+    chat.scrollTop = chat.scrollHeight;
+  } catch (err) { /* the server is still waking */ }
+}
+setInterval(tick, 120);
+tick();
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+async function ensureSession() {
+  if (session) return session;
+  const res = await fetch("/join?name=Eko", { method: "POST" });
+  const data = await res.json();
+  session = data.session;
+  return session;
+}
+
+async function send(type, data) {
+  await ensureSession();
+  await fetch("/input", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Session": session },
+    body: JSON.stringify({ type, data: data || {} }),
+  });
+}
+
+document.getElementById("drive").onclick = (event) => {
+  drive = !drive;
+  event.target.classList.toggle("on", drive);
+};
+document.getElementById("follow").onclick = (event) => {
+  follow = !follow;
+  event.target.classList.toggle("on", follow);
+};
+document.getElementById("jump").onclick = () => send("Jump");
+document.getElementById("stop").onclick = () => send("Stop");
+
+canvas.addEventListener("click", (event) => {
+  if (!drive) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = (event.clientX - rect.left) * devicePixelRatio;
+  const my = (event.clientY - rect.top) * devicePixelRatio;
+  const s = scale();
+  const sx = (mx - canvas.width / 2) / s;
+  const sy = (my - canvas.height * 0.58) / s;
+  const a = sx / COS;
+  const b = sy / SIN;
+  const x = cam.x + (a + b) / 2;
+  const z = cam.z + (b - a) / 2;
+  send("MoveTo", { position: [x, 0, z] });
+});
+
+addEventListener("keydown", (event) => {
+  if (event.code === "Space") { event.preventDefault(); send("Jump"); }
+});
+</script>
+</body>
+</html>
